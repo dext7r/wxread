@@ -32,6 +32,17 @@ jobs:
       with:
         python-version: '3.10'
 
+    - name: Generate random READ_NUM
+      id: random_read_num
+      run: |
+        # 生成30-60分钟对应的随机次数（60-120次）
+        # 每次30秒，30分钟=60次，60分钟=120次
+        RANDOM_READ_NUM=$((RANDOM % 61 + 60))
+        RANDOM_MINUTES=$((RANDOM_READ_NUM / 2))
+        echo "READ_NUM=$RANDOM_READ_NUM" >> $GITHUB_OUTPUT
+        echo "MINUTES=$RANDOM_MINUTES" >> $GITHUB_OUTPUT
+        echo "🎲 随机生成阅读时长: ${RANDOM_MINUTES}分钟 (${RANDOM_READ_NUM}次)"
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
@@ -45,7 +56,8 @@ jobs:
         WXPUSHER_SPT: ${{ secrets.WXPUSHER_SPT }}
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        READ_NUM: ${{ vars.READ_NUM }}  # 使用 Repository Variables
+        READ_NUM: ${{ steps.random_read_num.outputs.READ_NUM }}  # 使用动态生成的随机值
 
       run: |
+        echo "📚 开始执行微信读书任务，预计阅读时长: ${{ steps.random_read_num.outputs.MINUTES }}分钟"
         python main.py
