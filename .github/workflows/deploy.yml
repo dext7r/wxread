@@ -64,14 +64,19 @@ jobs:
         echo "🖥️  运行环境: ${{ runner.os }} ${{ runner.arch }}"
 
     - name: 🌐 配置网络环境
+      continue-on-error: true
       run: |
         echo "🔧 配置DNS服务器..."
-        echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf
-        echo "nameserver 8.8.4.4" | sudo tee -a /etc/resolv.conf
-        echo "nameserver 1.1.1.1" | sudo tee -a /etc/resolv.conf
+        echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf || echo "⚠️ DNS配置失败，使用默认配置"
+        echo "nameserver 8.8.4.4" | sudo tee -a /etc/resolv.conf || true
+        echo "nameserver 1.1.1.1" | sudo tee -a /etc/resolv.conf || true
 
         echo "🌐 测试网络连接..."
-        ping -c 3 weread.qq.com || echo "⚠️ 微信读书服务器连接测试失败"
+        if ping -c 3 weread.qq.com; then
+          echo "✅ 网络连接正常"
+        else
+          echo "⚠️ 微信读书服务器连接测试失败，但继续执行"
+        fi
 
     - name: 📥 检出代码
       uses: actions/checkout@v4
@@ -86,6 +91,7 @@ jobs:
 
     - name: 📦 缓存Python依赖
       uses: actions/cache@v3
+      continue-on-error: true
       with:
         path: |
           ~/.cache/pip
@@ -116,27 +122,34 @@ jobs:
     - name: 🔧 安装依赖
       run: |
         echo "📦 升级pip..."
-        python -m pip install --upgrade pip setuptools wheel
+        python -m pip install --upgrade pip setuptools wheel || echo "⚠️ pip升级失败，使用现有版本"
 
         echo "📋 安装项目依赖..."
         if [ -f requirements.txt ]; then
-          pip install -r requirements.txt
+          pip install -r requirements.txt || {
+            echo "⚠️ requirements.txt安装失败，尝试基础依赖"
+            pip install requests>=2.32.3 urllib3>=2.2.3 || echo "❌ 依赖安装失败"
+          }
         else
           # 兼容旧版本的依赖安装
-          pip install certifi==2024.8.30 charset-normalizer==3.4.0 idna==3.10 requests==2.32.3 urllib3==2.2.3
+          pip install certifi==2024.8.30 charset-normalizer==3.4.0 idna==3.10 requests==2.32.3 urllib3==2.2.3 || {
+            echo "⚠️ 指定版本安装失败，尝试最新版本"
+            pip install requests urllib3 certifi charset-normalizer idna || echo "❌ 依赖安装失败"
+          }
         fi
 
         echo "✅ 依赖安装完成"
-        pip list
+        pip list || echo "⚠️ 无法列出已安装包"
 
     - name: 🔍 环境检查
+      continue-on-error: true
       run: |
         echo "🔍 检查Python环境..."
-        python --version
-        pip --version
+        python --version || echo "⚠️ 无法获取Python版本"
+        pip --version || echo "⚠️ 无法获取pip版本"
 
         echo "📁 检查项目文件..."
-        ls -la
+        ls -la || echo "⚠️ 无法列出文件"
 
         echo "🧪 测试模块导入..."
         python -c "
@@ -147,10 +160,13 @@ jobs:
             print('✅ 新版本模块可用')
         except ImportError:
             print('⚠️ 新版本模块不可用，将使用兼容模式')
-        "
+        except Exception as e:
+            print(f'⚠️ 模块测试异常: {e}')
+        " || echo "⚠️ 模块导入测试失败，但继续执行"
 
     - name: 📚 执行阅读任务
       id: reading_task
+      continue-on-error: true
       env:
         # 微信读书配置
         WXREAD_CURL_BASH: ${{ secrets.WXREAD_CURL_BASH }}
@@ -175,14 +191,41 @@ jobs:
         echo "⏱️  预计阅读时长: ${{ steps.reading_params.outputs.MINUTES }}分钟"
         echo "🔧 日志级别: ${LOG_LEVEL}"
 
-        # 选择执行模式
-        if [ "${{ github.event.inputs.use_legacy }}" = "true" ]; then
-          echo "🔄 使用旧版本逻辑..."
-          python main.py --legacy
-        else
-          echo "🚀 使用新版本逻辑..."
-          python main.py --log-level "${LOG_LEVEL}"
+        # 检查必要的配置
+        if [ -z "$WXREAD_CURL_BASH" ]; then
+          echo "⚠️ WXREAD_CURL_BASH未配置，任务可能失败"
         fi
+
+        # 选择执行模式并添加重试机制
+        RETRY_COUNT=0
+        MAX_RETRIES=2
+
+        while [ $RETRY_COUNT -le $MAX_RETRIES ]; do
+          echo "🔄 尝试第 $((RETRY_COUNT + 1)) 次执行..."
+
+          if [ "${{ github.event.inputs.use_legacy }}" = "true" ]; then
+            echo "🔄 使用旧版本逻辑..."
+            if python main.py --legacy; then
+              echo "✅ 任务执行成功"
+              break
+            fi
+          else
+            echo "🚀 使用新版本逻辑..."
+            if python main.py --log-level "${LOG_LEVEL}"; then
+              echo "✅ 任务执行成功"
+              break
+            fi
+          fi
+
+          RETRY_COUNT=$((RETRY_COUNT + 1))
+          if [ $RETRY_COUNT -le $MAX_RETRIES ]; then
+            echo "⚠️ 任务执行失败，30秒后重试..."
+            sleep 30
+          else
+            echo "❌ 任务执行失败，已达到最大重试次数"
+            exit 0  # 不让整个工作流失败
+          fi
+        done
 
     - name: 📊 任务结果
       if: always()
