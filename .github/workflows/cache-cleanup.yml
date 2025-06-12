@@ -1,0 +1,82 @@
+name: 缓存清理
+
+on:
+  schedule:
+    # 每周清理一次缓存
+    - cron: '0 3 * * 0'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+jobs:
+  cleanup-cache:
+    name: 清理过期缓存
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 🧹 清理GitHub Actions缓存
+      uses: actions/github-script@v6
+      with:
+        script: |
+          console.log("🧹 开始清理过期缓存...");
+          
+          const caches = await github.rest.actions.getActionsCacheList({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+          });
+          
+          const oneWeekAgo = new Date();
+          oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+          
+          let deletedCount = 0;
+          
+          for (const cache of caches.data.actions_caches) {
+            const cacheDate = new Date(cache.created_at);
+            
+            if (cacheDate < oneWeekAgo) {
+              console.log(`删除过期缓存: ${cache.key} (创建于: ${cache.created_at})`);
+              
+              try {
+                await github.rest.actions.deleteActionsCacheById({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  cache_id: cache.id,
+                });
+                deletedCount++;
+              } catch (error) {
+                console.log(`删除缓存失败: ${error.message}`);
+              }
+            }
+          }
+          
+          console.log(`✅ 清理完成，共删除 ${deletedCount} 个过期缓存`);
+
+    - name: 📊 缓存统计
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const caches = await github.rest.actions.getActionsCacheList({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+          });
+          
+          console.log("📊 当前缓存统计:");
+          console.log(`- 总缓存数量: ${caches.data.total_count}`);
+          
+          let totalSize = 0;
+          const cacheTypes = {};
+          
+          for (const cache of caches.data.actions_caches) {
+            totalSize += cache.size_in_bytes;
+            
+            const keyPrefix = cache.key.split('-')[0];
+            cacheTypes[keyPrefix] = (cacheTypes[keyPrefix] || 0) + 1;
+          }
+          
+          console.log(`- 总缓存大小: ${(totalSize / 1024 / 1024).toFixed(2)} MB`);
+          console.log("- 缓存类型分布:");
+          
+          for (const [type, count] of Object.entries(cacheTypes)) {
+            console.log(`  - ${type}: ${count} 个`);
+          }

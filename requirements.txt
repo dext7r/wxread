@@ -10,6 +10,11 @@ pydantic>=2.0.0
 # 类型检查支持
 typing-extensions>=4.0.0
 
+# JSON处理
+certifi>=2024.8.30
+charset-normalizer>=3.4.0
+idna>=3.10
+
 # 开发和测试依赖（可选）
 # pytest>=7.0.0
 # pytest-cov>=4.0.0

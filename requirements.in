@@ -1,0 +1,10 @@
+# 微信读书自动阅读工具依赖包
+
+# HTTP请求库
+requests>=2.32.3
+
+# 数据验证
+pydantic>=2.0.0
+
+# 类型检查支持
+typing-extensions>=4.0.0
