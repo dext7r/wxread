@@ -1,108 +1,199 @@
-# main.py 主逻辑：包括字段拼接、模拟请求
-import re
-import json
-import time
-import random
-import logging
-import hashlib
-import requests
-import urllib.parse
-from push import push
-from config import data, headers, cookies, READ_NUM, PUSH_METHOD, book, chapter
+#!/usr/bin/env python3
+"""
+微信读书自动阅读工具 - 主程序入口
 
-# 配置日志格式
-logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)-8s - %(message)s')
+新版本使用模块化架构，提供更好的错误处理、配置管理和扩展性。
+兼容旧版本配置，支持平滑迁移。
 
-# 加密盐及其它默认值
-KEY = "3c5c8717f3daf09iop3423zafeqoi"
-COOKIE_DATA = {"rq": "%2Fweb%2Fbook%2Fread"}
-READ_URL = "https://weread.qq.com/web/book/read"
-RENEW_URL = "https://weread.qq.com/web/login/renewal"
-FIX_SYNCKEY_URL = "https://weread.qq.com/web/book/chapterInfos"
+使用方法：
+    python main.py                    # 使用默认配置
+    python main.py --config config.json  # 使用指定配置文件
+    python main.py --test-push       # 测试推送功能
+"""
+
+import sys
+import argparse
+from pathlib import Path
+
+# 添加src目录到Python路径
+sys.path.insert(0, str(Path(__file__).parent / "src"))
+
+try:
+    from src.config.manager import ConfigManager
+    from src.core.bot import WxReadBot
+    from src.utils.logger import setup_logging, get_logger
+    from src.utils.exceptions import WxReadError, ConfigError
+    NEW_VERSION_AVAILABLE = True
+except ImportError:
+    NEW_VERSION_AVAILABLE = False
 
 
-def encode_data(data):
-    """数据编码"""
-    return '&'.join(f"{k}={urllib.parse.quote(str(data[k]), safe='')}" for k in sorted(data.keys()))
+def parse_arguments():
+    """解析命令行参数"""
+    parser = argparse.ArgumentParser(
+        description="微信读书自动阅读工具",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例:
+  %(prog)s                          # 使用默认配置运行
+  %(prog)s --config config.json     # 使用指定配置文件
+  %(prog)s --test-push              # 测试推送功能
+  %(prog)s --log-level DEBUG        # 设置日志级别
+        """
+    )
+
+    parser.add_argument(
+        '--config', '-c',
+        type=str,
+        help='配置文件路径'
+    )
+
+    parser.add_argument(
+        '--test-push',
+        action='store_true',
+        help='测试推送功能'
+    )
+
+    parser.add_argument(
+        '--log-level',
+        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
+        default='INFO',
+        help='日志级别 (默认: INFO)'
+    )
+
+    parser.add_argument(
+        '--log-dir',
+        type=str,
+        default='logs',
+        help='日志目录 (默认: logs)'
+    )
+
+    parser.add_argument(
+        '--version', '-v',
+        action='version',
+        version='微信读书自动阅读工具 v2.0.0'
+    )
+
+    parser.add_argument(
+        '--legacy',
+        action='store_true',
+        help='强制使用旧版本逻辑'
+    )
+
+    return parser.parse_args()
 
 
-def cal_hash(input_string):
-    """计算哈希值"""
-    _7032f5 = 0x15051505
-    _cc1055 = _7032f5
-    length = len(input_string)
-    _19094e = length - 1
+def main_new_version():
+    """新版本主函数"""
+    args = parse_arguments()
 
-    while _19094e > 0:
-        _7032f5 = 0x7fffffff & (_7032f5 ^ ord(input_string[_19094e]) << (length - _19094e) % 30)
-        _cc1055 = 0x7fffffff & (_cc1055 ^ ord(input_string[_19094e - 1]) << _19094e % 30)
-        _19094e -= 2
+    # 设置日志
+    setup_logging(
+        level=args.log_level,
+        log_dir=args.log_dir,
+        enable_console=True,
+        enable_file=True
+    )
 
-    return hex(_7032f5 + _cc1055)[2:].lower()
+    logger = get_logger(__name__)
+    logger.info("=" * 50)
+    logger.info("微信读书自动阅读工具 v2.0.0 启动")
+    logger.info("=" * 50)
 
-def get_wr_skey():
-    """刷新cookie密钥"""
-    response = requests.post(RENEW_URL, headers=headers, cookies=cookies,
-                             data=json.dumps(COOKIE_DATA, separators=(',', ':')))
-    for cookie in response.headers.get('Set-Cookie', '').split(';'):
-        if "wr_skey" in cookie:
-            return cookie.split('=')[-1][:8]
-    return None
+    try:
+        # 加载配置
+        config_manager = ConfigManager(args.config)
+        logger.info("配置加载成功")
 
-def fix_no_synckey():
-    requests.post(FIX_SYNCKEY_URL, headers=headers, cookies=cookies,
-                             data=json.dumps({"bookIds":["3300060341"]}, separators=(',', ':')))
+        # 测试推送功能
+        if args.test_push:
+            from src.notifications.manager import NotificationManager
 
-def refresh_cookie():
-    logging.info(f"🍪 刷新cookie")
-    new_skey = get_wr_skey()
-    if new_skey:
-        cookies['wr_skey'] = new_skey
-        logging.info(f"✅ 密钥刷新成功，新密钥：{new_skey}")
-        logging.info(f"🔄 重新本次阅读。")
+            notification = NotificationManager.create_from_config(
+                config_manager.get_all()
+            )
+
+            if notification.is_enabled():
+                logger.info("开始测试推送功能...")
+                success = notification.test_push()
+                if success:
+                    logger.info("✅ 推送测试成功")
+                    return 0
+                else:
+                    logger.error("❌ 推送测试失败")
+                    return 1
+            else:
+                logger.info("推送功能未启用，无法测试")
+                return 0
+
+        # 创建并启动机器人
+        bot = WxReadBot(config_manager)
+
+        try:
+            result = bot.start_reading()
+
+            # 输出结果
+            logger.info("=" * 50)
+            logger.info("阅读任务完成")
+            logger.info(f"成功次数: {result['success_count']}/{result['total_attempts']}")
+            logger.info(f"阅读时长: {result['reading_minutes']} 分钟")
+            logger.info(f"成功率: {result['success_rate']:.1f}%")
+            logger.info("=" * 50)
+
+            return 0
+
+        finally:
+            bot.close()
+
+    except ConfigError as e:
+        logger.error(f"配置错误: {e}")
+        return 1
+    except WxReadError as e:
+        logger.error(f"运行错误: {e}")
+        return 1
+    except KeyboardInterrupt:
+        logger.info("用户中断程序")
+        return 0
+    except Exception as e:
+        logger.error(f"未知错误: {e}", exc_info=True)
+        return 1
+
+
+def main_legacy():
+    """旧版本主函数（兼容模式）"""
+    print("⚠️  使用兼容模式运行...")
+
+    # 导入旧版本模块
+    import warnings
+    warnings.filterwarnings("ignore", category=DeprecationWarning)
+
+    # 执行旧版本逻辑
+    import subprocess
+    result = subprocess.run([sys.executable, "main_old.py"],
+                          capture_output=False, text=True)
+    return result.returncode
+
+
+def main():
+    """主函数"""
+    args = parse_arguments()
+
+    # 检查是否强制使用旧版本
+    if args.legacy:
+        return main_legacy()
+
+    # 检查新版本是否可用
+    if NEW_VERSION_AVAILABLE:
+        return main_new_version()
     else:
-        ERROR_CODE = "❌ 无法获取新密钥或者WXREAD_CURL_BASH配置有误，终止运行。"
-        logging.error(ERROR_CODE)
-        push(ERROR_CODE, PUSH_METHOD)
-        raise Exception(ERROR_CODE)
+        print("⚠️  新版本模块未找到，使用兼容模式...")
+        return main_legacy()
 
-refresh_cookie()
-index = 1
-lastTime = int(time.time()) - 30
-while index <= READ_NUM:
-    data.pop('s')
-    data['b'] = random.choice(book)
-    data['c'] = random.choice(chapter)
-    thisTime = int(time.time())
-    data['ct'] = thisTime
-    data['rt'] = thisTime - lastTime
-    data['ts'] = int(thisTime * 1000) + random.randint(0, 1000)
-    data['rn'] = random.randint(0, 1000)
-    data['sg'] = hashlib.sha256(f"{data['ts']}{data['rn']}{KEY}".encode()).hexdigest()
-    data['s'] = cal_hash(encode_data(data))
 
-    logging.info(f"⏱️ 尝试第 {index} 次阅读...")
-    logging.info(f"📕 data: {data}")
-    response = requests.post(READ_URL, headers=headers, cookies=cookies, data=json.dumps(data, separators=(',', ':')))
-    resData = response.json()
-    logging.info(f"📕 response: {resData}")
-
-    if 'succ' in resData:
-        if 'synckey' in resData:
-            lastTime = thisTime
-            index += 1
-            time.sleep(30)
-            logging.info(f"✅ 阅读成功，阅读进度：{(index - 1) * 0.5} 分钟")
-        else:
-            logging.warning("❌ 无synckey, 尝试修复...")
-            fix_no_synckey()
-    else:
-        logging.warning("❌ cookie 已过期，尝试刷新...")
-        refresh_cookie()
-
-logging.info("🎉 阅读脚本已完成！")
-
-if PUSH_METHOD not in (None, ''):
-    logging.info("⏱️ 开始推送...")
-    push(f"🎉 微信读书自动阅读完成！\n⏱️ 阅读时长：{(index - 1) * 0.5}分钟。", PUSH_METHOD)
+if __name__ == "__main__":
+    try:
+        exit_code = main()
+        sys.exit(exit_code)
+    except Exception as e:
+        print(f"❌ 程序运行失败: {e}")
+        sys.exit(1)

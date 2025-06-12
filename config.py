@@ -1,6 +1,15 @@
 # config.py 自定义配置,包括阅读次数、推送token的填写
+# 注意：此文件保持向后兼容，推荐使用新的配置管理系统
 import os
 import re
+import warnings
+
+# 发出弃用警告
+warnings.warn(
+    "直接使用config.py已弃用，请考虑使用新的ConfigManager类",
+    DeprecationWarning,
+    stacklevel=2
+)
 
 """
 可修改区域
